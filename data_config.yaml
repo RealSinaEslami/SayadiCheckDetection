@@ -1,0 +1,8 @@
+path: C:/Users/Sina/Desktop/HamrahTel/Handwritten/yolo_dataset/
+
+train: images/train
+val: images/val
+
+names:
+  0: check
+  1: area
