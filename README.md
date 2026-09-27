@@ -1,310 +1,371 @@
-# Handwritten Text Detection with YOLOv8
+# Handwritten Text Detection with YOLOv8 & Custom CNN
 
-This project implements a handwritten text detection system using YOLOv8 (YOLO26n variant) to detect two classes: **check** (class 0) and **area** (class 1) in handwritten documents.
+This project implements a **two-stage pipeline** for handwritten document analysis:
+1. **YOLOv8 (YOLO26n)** - Object detection for `check` and `area` localization
+2. **Custom CNN** - Binary classification for check verification
+
+---
 
 ## 📁 Project Structure
 
 ```
 Handwritten/
-├── data_config.yaml              # Dataset configuration for YOLO training
-├── yolo_detection.ipynb          # Main training and evaluation notebook
-├── labelme_to_yolo_format.ipynb  # LabelMe to YOLO format conversion
-├── yolo26n.pt                    # Pre-trained YOLOv8n model weights
+├── data_config.yaml              # YOLO dataset configuration
+├── yolo_detection.ipynb          # Main YOLO training & evaluation (full)
+├── labelme_to_yolo_format.ipynb  # LabelMe JSON → YOLO format converter
+├── LabelmeToYolo.ipynb           # Duplicate of above (alternative name)
+├── YoloRun.ipynb                 # Minimal YOLO train/inference script
+├── CNN.ipynb                     # Custom CNN binary classifier
+├── DataPruning.ipynb             # YOLO-guided cropping for CNN data prep
+├── generate_names.py             # Synthetic Persian check generator
+├── inference.py                  # Production inference script (YOLO)
+├── data_config.yaml              # YOLO dataset config
+├── logs.txt                      # CNN training logs (50 epochs)
+├── LICENSE                       # MIT License
+├── test.jpg                      # Test image for inference
+├── yolo26n.pt                    # Pre-trained YOLOv8n weights
 ├── weights/
-│   └── yolo26n.pt               # Backup of model weights
-├── yolo_dataset/                 # Dataset directory
+│   └── yolo26n.pt               # Backup weights
+├── best_model.pth                # Best CNN model (binary classification)
+├── checkpoint.pth                # Full CNN checkpoint (epoch+optimizer)
+├── CNN_Acc.png                   # CNN accuracy curves
+├── CNN_Loss.png                  # CNN loss curves
+├── CNN_CM.png                    # CNN confusion matrix
+├── yolo_dataset/                 # YOLO detection dataset
 │   ├── images/
-│   │   ├── train/               # Training images (321 images)
-│   │   └── val/                 # Validation images (89 images)
+│   │   ├── train/ (321 images)
+│   │   └── val/ (89 images)
 │   └── labels/
-│       ├── train/               # Training labels (YOLO format)
-│       ├── val/                 # Validation labels (YOLO format)
-│       ├── train.cache          # Cached training labels
-│       └── val.cache            # Cached validation labels
+│       ├── train/ (YOLO format)
+│       ├── val/ (YOLO format)
+│       ├── train.cache
+│       └── val.cache
+├── Dataset/                      # CNN classification dataset
+│   ├── images/                   # All images
+│   ├── labels/                   # Binary labels (0/1)
+│   ├── Positives/                # Class 1 (check present)
+│   └── Negatives/                # Class 0 (no check)
 └── runs/
     └── detect/
-        └── train/               # Training outputs (weights, logs, plots)
+        └── train/                # YOLO training outputs
             ├── weights/
-            │   ├── best.pt      # Best model weights
-            │   └── last.pt      # Last epoch weights
-            ├── labels.jpg       # Label visualization
-            ├── results.png      # Training metrics plots
+            │   ├── best.pt       # Best YOLO model (mAP50-95)
+            │   └── last.pt       # Last epoch YOLO model
+            ├── results.png       # Training metrics
+            ├── confusion_matrix.png
             └── ...
 ```
+
+---
 
 ## 🔧 Requirements
 
 ```bash
-pip install ultralytics opencv-python torch torchvision
+pip install ultralytics opencv-python torch torchvision torchinfo albumentations scikit-learn matplotlib pillow
 ```
 
 - Python 3.10+
-- PyTorch 2.5+ with CUDA support
+- PyTorch 2.5+ with CUDA
 - Ultralytics 8.4+
-- OpenCV
-- NVIDIA GPU (RTX 3060 Laptop GPU used in training)
-
-## 📊 Dataset
-
-The dataset consists of **410 images** split into:
-- **Training**: 321 images
-- **Validation**: 89 images
-
-### Classes
-| Class ID | Class Name | Description |
-|----------|------------|-------------|
-| 0 | check | Checkbox/checkmark detection |
-| 1 | area | Text area/region detection |
-
-### Data Format
-Images are preprocessed to **640×640 grayscale**. Labels are in YOLO format:
-```
-<class_id> <x_center> <y_center> <width> <height>
-```
-All values normalized to [0, 1] relative to image dimensions.
-
-## 📓 Notebooks Documentation
-
-### 1. `labelme_to_yolo_format.ipynb`
-
-Converts LabelMe JSON annotations to YOLO format text files.
-
-#### Workflow:
-1. **Load dependencies**: `os`, `shutil`, `json`, `cv2`
-2. **Define paths**: Source images/labels, output directory
-3. **Parse LabelMe JSON**: Extract polygon points for each shape
-4. **Convert to YOLO format**:
-   - Calculate bounding box from 2 corner points
-   - Normalize coordinates by image width/height
-   - Save as `.txt` files with class ID and normalized coordinates
-5. **Resize images**: Convert to grayscale and resize to 640×640
-
-#### Key Code Sections:
-
-**Dependencies & Paths:**
-```python
-import os, shutil, json, cv2 as cv
-
-images_path = "C:/Users/Sina/Desktop/HamrahTel/Handwritten/yolo_dataset/images/"
-labels_path = "C:/Users/Sina/Desktop/HamrahTel/Handwritten/yolo_dataset/labels/"
-save_txt_path = "C:/Users/Sina/Desktop/HamrahTel/Handwritten/yolo_dataset/text_labels/"
-```
-
-**LabelMe to YOLO Conversion:**
-```python
-# Assumes exactly 2 shapes per image: check (index 0) and area (index 1)
-label_0 = data["shapes"][0]['label']  # check
-label_1 = data["shapes"][1]['label']  # area
-
-# Extract corner points (2 points per rectangle)
-x0_0, y0_0 = data["shapes"][0]['points'][0]
-x1_0, y1_0 = data["shapes"][0]['points'][1]
-
-# Convert to YOLO format (normalized center-x, center-y, width, height)
-x_center = ((x0 + x1) / 2) / img_width
-y_center = ((y0 + y1) / 2) / img_height
-width = abs(x1 - x0) / img_width
-height = abs(y1 - y0) / img_height
-```
-
-**Image Preprocessing:**
-```python
-img = cv.cvtColor(cv.imread(img_path), cv.COLOR_BGR2GRAY)
-new_img = cv.resize(img, (640, 640))
-cv.imwrite(save_path, new_img)
-```
-
-#### Output:
-- YOLO format label files in `yolo_dataset/text_labels/`
-- Resized grayscale images in `yolo_dataset/images/`
+- OpenCV, Albumentations, torchinfo
+- NVIDIA GPU (RTX 3060 Laptop used)
 
 ---
 
+## 📊 Datasets
+
+### 1. YOLO Detection Dataset (`yolo_dataset/`)
+| Split | Images | Classes |
+|-------|--------|---------|
+| Train | 321 | check (0), area (1) |
+| Val | 89 | check (0), area (1) |
+
+- Images: 640×640 grayscale
+- Labels: YOLO format (normalized xywh)
+
+### 2. CNN Classification Dataset (`Dataset/`)
+| Class | Label | Description | Count |
+|-------|-------|-------------|-------|
+| Positive | 1 | Check present | ~50% |
+| Negative | 0 | No check | ~50% |
+
+- Images: 64×256 grayscale (resized from YOLO crops)
+- Labels: Single integer per file (0 or 1)
+
+---
+
+## 📓 Notebooks Documentation
+
+### 1. `labelme_to_yolo_format.ipynb` / `LabelmeToYolo.ipynb`
+**LabelMe JSON → YOLO format converter + image preprocessing**
+
+**Workflow:**
+1. Parse LabelMe JSON (rectangle annotations with 2 corner points)
+2. Convert to YOLO format: `class_id x_center y_center width height` (normalized)
+3. Resize images to 640×640 grayscale
+
+**Key Assumptions:**
+- Exactly 2 shapes per image: `shapes[0]` = check, `shapes[1]` = area
+- Rectangle annotations (2 points per shape)
+
 ### 2. `yolo_detection.ipynb`
+**Full YOLOv8 training, validation, and analysis**
 
-Main training, validation, and inference notebook using Ultralytics YOLOv8.
+**Model: YOLO26n (YOLOv8n variant)**
+- Parameters: 2.5M | GFLOPs: 5.9 | Layers: 260
+- Backbone: CSPDarknet with C3k2 blocks
+- Neck: PAN-FPN with C2PSA attention
+- Head: Detect (3 scales: 64, 128, 256)
 
-#### Configuration (`data_config.yaml`):
-```yaml
-path: C:/Users/Sina/Desktop/HamrahTel/Handwritten/yolo_dataset/
-train: images/train
-val: images/val
-names:
-  0: check
-  1: area
-```
-
-#### Model Architecture: YOLO26n (YOLOv8n variant)
-- **Parameters**: 2,504,580 (2.5M)
-- **GFLOPs**: 5.9
-- **Layers**: 260
-- **Input**: 640×640 grayscale (1 channel)
-- **Output**: 2 classes (check, area)
-
-**Architecture Summary:**
-```
-Backbone: CSPDarknet with C3k2 blocks
-Neck: PAN-FPN with C2PSA attention
-Head: Detect head with 3 scales [64, 128, 256]
-```
-
-#### Training Hyperparameters:
-| Parameter | Value |
-|-----------|-------|
-| Epochs | 50 |
-| Batch Size | 16 |
-| Image Size | 640 |
-| Optimizer | AdamW (auto-selected) |
-| Learning Rate | 0.001667 (auto) |
-| Momentum | 0.9 |
+**Training Config (50 epochs):**
+| Param | Value |
+|-------|-------|
+| Batch | 16 |
+| Img Size | 640 |
+| Optimizer | AdamW (auto) |
+| LR | 0.001667 |
 | Weight Decay | 0.0005 |
-| Warmup Epochs | 3 |
-| Mosaic Augmentation | 1.0 |
-| Mixup | 0.0 |
-| Flip LR | 0.5 |
-| HSV Augmentation | h=0.015, s=0.7, v=0.4 |
-| Box Loss Weight | 7.5 |
-| Class Loss Weight | 0.5 |
-| DFL Loss Weight | 1.5 |
-| Patience (Early Stop) | 100 |
-| Workers | 8 |
+| Augmentation | Mosaic=1.0, HSV, FlipLR=0.5, Erasing=0.4 |
 | AMP | Enabled |
-| Device | CUDA:0 |
+| Patience | 100 |
 
-#### Training Command:
-```python
-from ultralytics import YOLO
-
-model = YOLO("yolo26n.pt")  # Load pre-trained weights
-results = model.train(
-    data="data_config.yaml",
-    epochs=50,
-    imgsz=640,
-    batch=16,
-    device=0,
-    workers=8,
-    amp=True,
-    patience=100,
-    project="runs/detect",
-    name="train"
-)
-```
-
-#### Training Results (50 Epochs):
-
-| Metric | Final Value |
-|--------|-------------|
+**Results (Epoch 50):**
+| Metric | Value |
+|--------|-------|
 | mAP50 (all) | 0.995 |
 | mAP50-95 (all) | 0.846 |
 | Box Loss | 0.580 |
-| Class Loss | 0.331 |
-| L1 Loss | 0.009 |
+| Cls Loss | 0.331 |
 
-**Per-Class Performance:**
+**Per-Class:**
 | Class | Precision | Recall | mAP50 | mAP50-95 |
 |-------|-----------|--------|-------|----------|
 | check (0) | 0.991 | 1.000 | 0.995 | 0.955 |
 | area (1) | 0.997 | 1.000 | 0.995 | 0.736 |
 
-#### Inference Speed:
-- Preprocess: 0.6ms
-- Inference: 1.6ms
-- Postprocess: 1.6ms
-- **Total: ~3.8ms per image** (~260 FPS)
+**Speed:** ~3.8ms/img (preprocess 0.6ms + inference 1.6ms + postprocess 1.6ms)
 
-#### Output Files:
-- `runs/detect/train/weights/best.pt` - Best model (mAP50-95)
-- `runs/detect/train/weights/last.pt` - Last epoch model
-- `runs/detect/train/results.png` - Training curves
-- `runs/detect/train/labels.jpg` - Ground truth visualization
-- `runs/detect/train/confusion_matrix.png` - Confusion matrix
-- `runs/detect/train/*_curve.png` - PR, F1, P-conf, R-conf curves
-
-## 🚀 Usage
-
-### Training
-```bash
-# Via notebook
-jupyter notebook yolo_detection.ipynb
-
-# Or command line
-yolo detect train data=data_config.yaml model=yolo26n.pt epochs=50 imgsz=640 batch=16 device=0
-```
-
-### Inference
+### 3. `YoloRun.ipynb`
+**Minimal YOLO script (2 cells):**
 ```python
-from ultralytics import YOLO
+# Cell 1: Train
+model = YOLO("yolo26n.pt")
+model.train(data="data_config.yaml", epochs=50, imgsz=640, batch=16)
 
-# Load trained model
+# Cell 2: Inference
 model = YOLO("runs/detect/train/weights/best.pt")
-
-# Run inference on image
-results = model.predict("path/to/image.jpg", imgsz=640, conf=0.25)
-
-# Access results
-for r in results:
-    print(r.boxes.xywhn)  # Normalized xywh
-    print(r.boxes.cls)    # Class IDs
-    print(r.boxes.conf)   # Confidence scores
-    r.show()              # Display with boxes
+results = model("test.jpg")
+results[0].show()
 ```
 
-### Validation
+### 4. `CNN.ipynb`
+**Custom CNN for binary check classification**
+
+**Architecture:**
+```
+Input: 1×64×256 (grayscale)
+├─ Conv2d(1→64, 3×3) + Conv2d(64→128, 3×3) + MaxPool2d(2) + BN + ReLU
+├─ Conv2d(128→256, 3×3) + MaxPool2d(2) + BN + ReLU
+├─ Conv2d(256→64, 3×3) + MaxPool2d(2) + BN + ReLU
+├─ Conv2d(64→16, 3×3) + MaxPool2d(2) + ReLU
+├─ Flatten → Dropout(0.2) → Linear(1024→16) + ReLU
+└─ Linear(16→1) + Sigmoid
+```
+- Parameters: 543,729 | Mult-Adds: 41.33G
+
+**Training (50 epochs):**
+- Loss: BCELoss
+- Optimizer: Adam (lr=1e-3, weight_decay=1e-2)
+- Batch: 16 | Split: 80/20 train/test
+
+**Final Metrics (Epoch 50):**
+| Metric | Train | Test |
+|--------|-------|------|
+| Loss | 0.1725 | 0.2382 |
+| Accuracy | 0.9357 | 0.9013 |
+
+**Best Test Accuracy:** 0.9454 (Epoch 41)
+**Best Test Loss:** 0.1595 (Epoch 41)
+
+**Outputs:**
+- `best_model.pth` - Best state_dict only
+- `checkpoint.pth` - Full checkpoint (epoch, model, optimizer, loss)
+- `CNN_Acc.png`, `CNN_Loss.png`, `CNN_CM.png` - Visualizations
+
+### 5. `DataPruning.ipynb`
+**YOLO-guided region cropping for CNN dataset preparation**
+
+**Pipeline:**
+1. Load trained YOLO (`best.pt`)
+2. Iterate through `Dataset/Positives/` and `Dataset/Negatives/`
+3. Run YOLO inference → get `area` class bounding box (index 1)
+4. Crop detected region → resize to 256×64
+5. Save to CNN training directories
+
+**Purpose:** Extract only the relevant "area" region from full documents for efficient CNN classification.
+
+### 6. `generate_names.py`
+**Synthetic Persian check image generator**
+
+**Features:**
+- Base template: `in_payment_of.png`
+- 22 Persian names (companies + persons)
+- Random Persian fonts from `fonts/` directory
+- RTL text rendering with RAQM/arabic_reshaper+bidi fallback
+- Random ink intensity (5-20), rotation (-0.8° to 0.8°)
+- High-res rendering (6× scale) → downsample with LANCZOS
+- Output: 500 PNG files + ZIP archive
+- Filenames: UUID-based
+
+**Config:**
 ```python
-metrics = model.val(data="data_config.yaml", split="val")
-print(f"mAP50: {metrics.box.map50}")
-print(f"mAP50-95: {metrics.box.map}")
+TOTAL_COUNT = 500
+BOX_X, BOX_Y = 420, 130      # Text box position
+BOX_WIDTH, BOX_HEIGHT = 400, 150
+SCALE_FACTOR = 6              # Supersampling for quality
 ```
-
-## 📈 Key Achievements
-
-- ✅ **High Accuracy**: mAP50 = 0.995, mAP50-95 = 0.846
-- ✅ **Fast Inference**: ~3.8ms/image on RTX 3060
-- ✅ **Lightweight Model**: Only 2.5M parameters (5.4MB)
-- ✅ **Robust Detection**: Perfect recall (1.0) on both classes
-- ✅ **Production Ready**: Exported weights ready for deployment
-
-## 🔄 Pipeline Summary
-
-```
-LabelMe JSON Annotations
-        │
-        ▼
-labelme_to_yolo_format.ipynb
-        │
-        ├───▶ YOLO format labels (.txt)
-        │
-        └───▶ Resized 640×640 Grayscale Images
-                    │
-                    ▼
-            data_config.yaml
-                    │
-                    ▼
-            yolo_detection.ipynb (Training)
-                    │
-                    ▼
-            best.pt (Trained Model)
-                    │
-                    ▼
-            Inference / Deployment
-```
-
-## 📝 Notes
-
-1. **LabelMe Format Assumption**: The conversion script assumes exactly 2 shapes per image in fixed order (check first, area second). Modify if your annotation format differs.
-
-2. **Grayscale Input**: Images are converted to single-channel grayscale. The model expects 1-channel input (adapted from 3-channel pre-trained weights).
-
-3. **Transfer Learning**: Pre-trained COCO weights (yolo26n.pt) were fine-tuned. 606/708 layers transferred successfully.
-
-4. **Class Imbalance**: Both classes have equal instances (89 each in val), balanced dataset.
-
-5. **Early Stopping**: Patience=100 prevents overfitting; training stopped at epoch 50 (max epochs reached).
-
-## 📄 License
-
-Internal project for HamrahTel. All rights reserved.
 
 ---
 
-*Documentation generated from source code and training logs.*
+## 🚀 Usage
+
+### YOLO Training
+```bash
+# Full notebook
+jupyter notebook yolo_detection.ipynb
+
+# Minimal
+jupyter notebook YoloRun.ipynb
+
+# CLI
+yolo detect train data=data_config.yaml model=yolo26n.pt epochs=50 imgsz=640 batch=16 device=0
+```
+
+### YOLO Inference
+```python
+from ultralytics import YOLO
+model = YOLO("runs/detect/train/weights/best.pt")
+results = model.predict("test.jpg", imgsz=640, conf=0.25)
+# results[0].boxes.xywhn, .cls, .conf
+```
+
+### CNN Training
+```bash
+jupyter notebook CNN.ipynb
+```
+
+### CNN Inference
+```python
+import torch, cv2
+model = CNN()  # Define architecture
+model.load_state_dict(torch.load("best_model.pth"))
+model.eval()
+
+img = cv2.imread("test.jpg", cv2.IMREAD_GRAYSCALE)
+img = cv2.resize(img, (256, 64)) / 255.0
+img = torch.tensor(img, dtype=torch.float32).unsqueeze(0).unsqueeze(0)
+with torch.no_grad():
+    prob = model(img).item()  # 0.0-1.0, >0.5 = check present
+```
+
+### Full Pipeline (YOLO + CNN)
+```python
+# 1. YOLO detects check + area boxes
+# 2. Crop area region using YOLO box
+# 3. CNN classifies if check is present in cropped region
+```
+
+### Synthetic Data Generation
+```bash
+python generate_names.py
+# Creates 500 images in generated_checks_huge/ + persian_filled_checks_huge.zip
+```
+
+### Production Inference Script
+```bash
+python inference.py --image test.jpg --model runs/detect/train/weights/best.pt
+python inference.py --dir test_images/ --output results/ --conf 0.3
+```
+
+---
+
+## 📈 Key Achievements
+
+| Component | Metric | Value |
+|-----------|--------|-------|
+| **YOLO Detection** | mAP50 | 0.995 |
+| | mAP50-95 | 0.846 |
+| | Inference Speed | 3.8 ms/img |
+| | Model Size | 5.4 MB |
+| **CNN Classification** | Best Test Acc | 0.9454 |
+| | Final Test Acc | 0.9013 |
+| | Model Size | ~2.1 MB |
+| **Combined Pipeline** | End-to-end | Detection + Verification |
+
+---
+
+## 🔄 Complete Pipeline Flow
+
+```
+┌─────────────────┐
+│ LabelMe JSON    │
+└────────┬────────┘
+         │ labelme_to_yolo_format.ipynb
+         ▼
+┌─────────────────┐     ┌─────────────────┐
+│ YOLO Dataset    │     │ Synthetic Data  │
+│ (640×640 gray)  │     │ generate_names.py
+└────────┬────────┘     └────────┬────────┘
+         │                       │
+         ▼                       ▼
+┌─────────────────┐     ┌─────────────────┐
+│ YOLO Training   │     │ Augment Dataset │
+│ (yolo_detection)│     │ (optional)      │
+└────────┬────────┘     └────────┬────────┘
+         │                       │
+         ▼                       ▼
+┌─────────────────┐     ┌─────────────────┐
+│ best.pt         │────▶│ DataPruning     │
+│ (YOLO detect)   │     │ (crop areas)    │
+└────────┬────────┘     └────────┬────────┘
+         │                       │
+         ▼                       ▼
+┌─────────────────┐     ┌─────────────────┐
+│ Detect check/   │     │ CNN Dataset     │
+│ area boxes      │     │ (64×256 crops)  │
+└────────┬────────┘     └────────┬────────┘
+         │                       │
+         └───────────┬───────────┘
+                     ▼
+          ┌─────────────────┐
+          │ CNN Training    │
+          │ (CNN.ipynb)     │
+          └────────┬────────┘
+                   ▼
+          ┌─────────────────┐
+          │ best_model.pth  │
+          │ (binary check   │
+          │  classifier)    │
+          └─────────────────┘
+```
+
+---
+
+## 📝 Notes
+
+1. **YOLO Input:** Single-channel grayscale (adapted from 3-channel pretrained weights)
+2. **Transfer Learning:** 606/708 YOLO layers transferred from COCO pretrained
+3. **CNN Input:** 64×256 crops from YOLO `area` detections
+4. **Class Balance:** Both datasets approximately balanced (50/50)
+5. **Early Stopping:** YOLO patience=100, CNN saves best by test loss
+6. **LabelMe Assumption:** Fixed 2-shape order (check→area)
+
+---
+
+## 📄 License
+
+MIT License - Copyright (c) 2026 Sina Eslami
+
+---
+
+*Documentation generated from all source code, notebooks, and training logs.*
