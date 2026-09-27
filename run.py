@@ -10,7 +10,7 @@ import torch
 import torch.nn as nn
 
 yolo_model = YOLO("runs/detect/train/weights/best.pt")
-input_path = r"C:\Users\Sina\Desktop\HamrahTel\Handwritten\test2.jpg"
+input_path = r"C:\Users\Sina\Desktop\HamrahTel\Handwritten\test.jpg"
 results = yolo_model(input_path)
 
 for result in results:
@@ -83,4 +83,8 @@ model.eval()
 with torch.no_grad():
     output = model(target_image).squeeze()
 
-print("Output:", labels[output.item()])
+probability = output.item()
+confidence = 1 - probability
+
+print("Predicted Label:", labels[output.item()])
+print("Confidence (%):", confidence * 100)
