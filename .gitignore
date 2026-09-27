@@ -3,4 +3,6 @@ yolo_dataset
 All_data
 runs
 data_config.yaml
-yolo26n.pt
+Dataset
+weights
+test.jpg
